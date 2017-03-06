@@ -10,3 +10,8 @@ The following configration options are mostly self explanatory.
 email = 'mylogin@email.com'
 password = 'secretpassword'
 siteid = '12345678'
+DOMOTICZ_IDX_ARMSTATE = ''
+MQTT_HOST = ''
+MQTT_PORT = '1883'
+MQTT_USERNAME = ''
+MQTT_PASSWORD = ''

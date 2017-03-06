@@ -1,51 +1,4 @@
 # -*- coding: utf-8 -*-
-'''
-This is a small module to interface against the webpage of Sector Alarm.
-
-Current functions:
-    get_status()       - returns the current status as an object, example:
-                            {
-                                "event": "Tillkopplat",
-                                "user": "Person A",
-                                "timestamp": "2016-02-14 23:17:00"
-                            }
-
-    get_log()          - returns the event log as a list, example:
-                            [
-                                {
-                                    "timestamp": "2016-02-15 23:17:00",
-                                    "event": "Tillkopplat",
-                                    "user": "Person A"
-                                }, {
-                                    "timestamp": "2016-02-15 20:38:00",
-                                    "event": "Strömfel (återställt)"
-                                }, {
-                                    "timestamp": "2016-02-15 20:16:00",
-                                    "event": "Strömfel"
-                                }, {
-                                    "timestamp": "2016-02-15 17:09:00",
-                                    "event": "Frånkopplat",
-                                    "user": "Person B"
-                                }, {
-                                    "timestamp": "2016-02-15 08:31:00",
-                                    "event": "Tillkopplat",
-                                    "user": "Person B"
-                                }, {
-                                    "timestamp": "2016-02-15 05:40:00",
-                                    "event": "Frånkopplat",
-                                    "user": "Person C"
-                                }, {
-                                    "timestamp": "2016-02-14 23:23:00",
-                                    "event": "Tillkopplat",
-                                    "user": "Person A"
-                                }, {
-                                    "timestamp": "2016-02-14 19:24:00",
-                                    "event": "Frånkopplat",
-                                    "user": "Person C"
-                                }
-                            ]
-'''
-
 import datetime
 import json
 from helpers.HTML import parseHTMLToken, parseHTMLstatus, parseHTMLlog
@@ -54,6 +7,7 @@ import os
 import re
 import requests
 import sys
+import paho.mqtt.client as mqtt
 
 
 LOGINPAGE = 'https://minasidor.sectoralarm.se/Users/Account/LogOn'
@@ -65,6 +19,12 @@ COOKIEFILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data', '
 DATENORMRE = re.compile(r'(\d+)/(\d+) (\d+):(\d+)')
 DATESPECRE = re.compile(r'^(.+) (\d+):(\d+)')
 
+def on_mqtt_connect(client, userdata, rc):
+    print('Connected - Starting to process data.')
+    client.subscribe('Sector Alarm')
+
+def on_mqtt_message(client, userdata, msg):
+    print(msg.topic+" "+str(msg.payload))
 
 def log(message):
     if os.environ.get('DEBUG'):
@@ -122,7 +82,6 @@ def fix_date(date_string):
 
     return result
 
-
 class SectorStatus():
     '''
     The class that returns the current status of the alarm.
@@ -131,7 +90,6 @@ class SectorStatus():
     def __init__(self, config):
         self.config = config
         self.session = requests.Session()
-
 
     def __get_token(self):
         '''
@@ -277,7 +235,20 @@ class SectorStatus():
         status = self.__get_status()
         status['timestamp'] = fix_date(status['timestamp'])
         status['user'] = fix_user(status['user'])
+        current_alarm_status = status['event']
+
+        if current_alarm_status == u'Frånkopplat':
+            alarm_code = 1;
+            client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
+        elif current_alarm_status == u'Tillkopplat':
+            alarm_code = 4;
+            client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
+        else:
+            alarm_code = 0;
+            client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
+
         return status
+
 
 if __name__ == '__main__':
     if len(sys.argv) < 2 or (sys.argv[1] != 'status' and sys.argv[1] != 'log'):
@@ -286,6 +257,12 @@ if __name__ == '__main__':
 
     import config
     SECTORSTATUS = SectorStatus(config)
+
+    client = mqtt.Client()
+    client.on_connect = on_mqtt_connect
+    client.on_message = on_mqtt_message
+    client.username_pw_set(config.MQTT_USERNAME, password=config.MQTT_PASSWORD)
+    client.connect(config.MQTT_HOST, config.MQTT_PORT, 5)
 
     if sys.argv[1] == 'status':
         print json.dumps(SECTORSTATUS.status())
