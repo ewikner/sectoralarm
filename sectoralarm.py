@@ -19,12 +19,31 @@ COOKIEFILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data', '
 DATENORMRE = re.compile(r'(\d+)/(\d+) (\d+):(\d+)')
 DATESPECRE = re.compile(r'^(.+) (\d+):(\d+)')
 
+def create_mqtt_client():
+    print 'create client'
+    client = mqtt.Client()
+    client.on_connect = on_mqtt_connect
+    client.on_message = on_mqtt_message
+    client.username_pw_set(config.MQTT_USERNAME, password=config.MQTT_PASSWORD)
+    client.connect(config.MQTT_HOST, config.MQTT_PORT, 5)
+    client.loop_forever()
+
+    return client
+
 def on_mqtt_connect(client, userdata, rc):
     print('Connected - Starting to process data.')
-    client.subscribe('Sector Alarm')
+    client.subscribe('domoticz/out')
+    client.publish('domoticz/in', ('{"command":"getdeviceinfo","idx":%s}' % (config.DOMOTICZ_IDX_ARMSTATE)))
 
 def on_mqtt_message(client, userdata, msg):
-    print(msg.topic+" "+str(msg.payload))
+    topic = msg.topic
+    parsed_json = json.loads(msg.payload)
+    idx = int(parsed_json['idx'])
+    #print(parsed_json)
+
+    if idx == int(config.DOMOTICZ_IDX_ARMSTATE):
+        c_value = parsed_json['svalue1']
+        print json.dumps(SECTORSTATUS.status(client, c_value))
 
 def log(message):
     if os.environ.get('DEBUG'):
@@ -114,32 +133,6 @@ class SectorStatus():
         parser.feed(response.text)
         return parser.statuses
 
-    def __get_log(self):
-        '''
-        Fetch and parse the event log page.
-        '''
-        response = self.session.get(LOGPAGE + self.config.siteid + '?locksAvailable=False')
-        parser = parseHTMLlog()
-        parser.feed(HTMLParser.HTMLParser().unescape(response.text))
-        result = []
-        for row in parser.log:
-            row_data = {}
-            if len(row) > 0:
-                row_data['event'] = row[0]
-
-            if len(row) > 1:
-                row_data['timestamp'] = fix_date(row[1])
-
-            if len(row) > 2:
-                row_data['user'] = row[2]
-
-            if len(row) > 3:
-                row_data['unknown'] = row[3:]
-
-            result.append(row_data)
-
-        return result
-
     def __save_cookies(self):
         '''
         Store the cookie-jar on disk to avoid having to login
@@ -215,20 +208,12 @@ class SectorStatus():
         else:
             log('Already logged in')
 
-    def event_log(self):
-        '''
-        Retrive the event log, login if neccesary.
-        '''
-        self.__login()
-
-        # Get event log
-        return self.__get_log()
-
-    def status(self):
+    def status(self, client, cvalue):
         '''
         Wrapper function for logging in and fetching the status
         of the alarm in one go that returns a dict.
         '''
+        
         self.__login()
 
         # Get the status
@@ -236,16 +221,20 @@ class SectorStatus():
         status['timestamp'] = fix_date(status['timestamp'])
         status['user'] = fix_user(status['user'])
         current_alarm_status = status['event']
+        #current_alarm_status = ''
+        if cvalue != current_alarm_status:
+            if current_alarm_status == u'Frånkopplat':
+                alarm_code = 1;
+                client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
+            elif current_alarm_status == u'Tillkopplat':
+                alarm_code = 4;
+                client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
+            else:
+                alarm_code = 0;
+                client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
 
-        if current_alarm_status == u'Frånkopplat':
-            alarm_code = 1;
-            client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
-        elif current_alarm_status == u'Tillkopplat':
-            alarm_code = 4;
-            client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
-        else:
-            alarm_code = 0;
-            client.publish('domoticz/in', ('{"command":"udevice","idx":%s,"nvalue":%s,"svalue":"%s"}' % (self.config.DOMOTICZ_IDX_ARMSTATE, alarm_code, current_alarm_status)))
+    client.loop_stop()
+        client.disconnect()
 
         return status
 
@@ -257,14 +246,6 @@ if __name__ == '__main__':
 
     import config
     SECTORSTATUS = SectorStatus(config)
-
-    client = mqtt.Client()
-    client.on_connect = on_mqtt_connect
-    client.on_message = on_mqtt_message
-    client.username_pw_set(config.MQTT_USERNAME, password=config.MQTT_PASSWORD)
-    client.connect(config.MQTT_HOST, config.MQTT_PORT, 5)
-
-    if sys.argv[1] == 'status':
-        print json.dumps(SECTORSTATUS.status())
-    elif sys.argv[1] == 'log':
-        print json.dumps(SECTORSTATUS.event_log())
+    
+    mqtt_client = create_mqtt_client()
+    # print json.dumps(SECTORSTATUS.status())
